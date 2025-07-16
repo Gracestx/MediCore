@@ -11,13 +11,21 @@
 (define-constant err-invalid-expiry (err u105))
 (define-constant err-emergency-cooldown (err u106))
 (define-constant err-invalid-emergency-type (err u107))
+(define-constant err-multisig-exists (err u108))
+(define-constant err-insufficient-signatures (err u109))
+(define-constant err-already-signed (err u110))
+(define-constant err-multisig-expired (err u111))
 (define-constant emergency-cooldown-period u144) ;; 24 hours in blocks (assuming 10 min blocks)
+(define-constant min-multisig-signatures u2)
+(define-constant max-multisig-signatures u5)
 
 ;; Data Variables
 (define-data-var next-record-id uint u1)
 (define-data-var total-records uint u0)
 (define-data-var total-access-grants uint u0)
 (define-data-var total-emergency-accesses uint u0)
+(define-data-var next-multisig-id uint u1)
+(define-data-var total-multisig-requests uint u0)
 
 ;; Data Maps
 (define-map medical-records 
@@ -74,6 +82,36 @@
   }
 )
 
+(define-map multisig-access-requests 
+  uint 
+  {
+    record-id: uint,
+    initiator: principal,
+    required-signatures: uint,
+    current-signatures: uint,
+    expires-at: uint,
+    case-description: (string-ascii 200),
+    access-level: (string-ascii 20),
+    is-active: bool,
+    is-approved: bool,
+    created-at: uint
+  }
+)
+
+(define-map multisig-signatures 
+  {request-id: uint, provider: principal}
+  {
+    signed-at: uint,
+    provider-specialty: (string-ascii 50),
+    signature-justification: (string-ascii 150)
+  }
+)
+
+(define-map multisig-providers 
+  uint 
+  (list 5 principal)
+)
+
 ;; Private Functions
 (define-private (is-valid-record-type (record-type (string-ascii 50)))
   (or 
@@ -109,6 +147,27 @@
 (define-private (check-emergency-cooldown (provider principal))
   (let ((provider-info (unwrap-panic (map-get? healthcare-providers provider))))
     (> (+ (get last-emergency-access provider-info) emergency-cooldown-period) stacks-block-height)
+  )
+)
+
+(define-private (is-provider-in-list (provider principal) (provider-list (list 5 principal)))
+  (is-some (index-of provider-list provider))
+)
+
+(define-private (validate-multisig-providers (providers (list 5 principal)))
+  (let ((provider-count (len providers)))
+    (and 
+      (>= provider-count min-multisig-signatures)
+      (<= provider-count max-multisig-signatures)
+      (is-eq (len providers) (len (filter is-verified-provider providers)))
+    )
+  )
+)
+
+(define-private (is-verified-provider (provider principal))
+  (match (map-get? healthcare-providers provider)
+    provider-info (get verified provider-info)
+    false
   )
 )
 
@@ -373,6 +432,26 @@
   (map-get? access-permissions {record-id: record-id, provider: provider})
 )
 
+;; Get multisig access request details
+(define-read-only (get-multisig-request (request-id uint))
+  (map-get? multisig-access-requests request-id)
+)
+
+;; Get multisig providers for a request
+(define-read-only (get-multisig-providers (request-id uint))
+  (map-get? multisig-providers request-id)
+)
+
+;; Get multisig signature details
+(define-read-only (get-multisig-signature (request-id uint) (provider principal))
+  (map-get? multisig-signatures {request-id: request-id, provider: provider})
+)
+
+;; Check if provider has signed multisig request
+(define-read-only (has-provider-signed (request-id uint) (provider principal))
+  (is-some (map-get? multisig-signatures {request-id: request-id, provider: provider}))
+)
+
 ;; Get emergency access log
 (define-read-only (get-emergency-access-log (log-id uint))
   (map-get? emergency-access-log log-id)
@@ -400,7 +479,9 @@
     total-records: (var-get total-records),
     total-access-grants: (var-get total-access-grants),
     total-emergency-accesses: (var-get total-emergency-accesses),
-    next-record-id: (var-get next-record-id)
+    total-multisig-requests: (var-get total-multisig-requests),
+    next-record-id: (var-get next-record-id),
+    next-multisig-id: (var-get next-multisig-id)
   }
 )
 
