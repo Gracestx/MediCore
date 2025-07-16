@@ -9,11 +9,15 @@
 (define-constant err-access-denied (err u103))
 (define-constant err-record-exists (err u104))
 (define-constant err-invalid-expiry (err u105))
+(define-constant err-emergency-cooldown (err u106))
+(define-constant err-invalid-emergency-type (err u107))
+(define-constant emergency-cooldown-period u144) ;; 24 hours in blocks (assuming 10 min blocks)
 
 ;; Data Variables
 (define-data-var next-record-id uint u1)
 (define-data-var total-records uint u0)
 (define-data-var total-access-grants uint u0)
+(define-data-var total-emergency-accesses uint u0)
 
 ;; Data Maps
 (define-map medical-records 
@@ -51,7 +55,22 @@
     license-number: (string-ascii 50),
     specialty: (string-ascii 50),
     verified: bool,
-    registered-at: uint
+    registered-at: uint,
+    emergency-authorized: bool,
+    last-emergency-access: uint
+  }
+)
+
+(define-map emergency-access-log 
+  uint 
+  {
+    record-id: uint,
+    provider: principal,
+    emergency-type: (string-ascii 30),
+    justification: (string-ascii 200),
+    accessed-at: uint,
+    patient: principal,
+    auto-expires-at: uint
   }
 )
 
@@ -75,11 +94,27 @@
   )
 )
 
+(define-private (is-valid-emergency-type (emergency-type (string-ascii 30)))
+  (or 
+    (is-eq emergency-type "cardiac-arrest")
+    (is-eq emergency-type "trauma")
+    (is-eq emergency-type "stroke")
+    (is-eq emergency-type "overdose")
+    (is-eq emergency-type "allergic-reaction")
+    (is-eq emergency-type "unconscious")
+    (is-eq emergency-type "other-critical")
+  )
+)
+
+(define-private (check-emergency-cooldown (provider principal))
+  (let ((provider-info (unwrap-panic (map-get? healthcare-providers provider))))
+    (> (+ (get last-emergency-access provider-info) emergency-cooldown-period) stacks-block-height)
+  )
+)
+
 (define-private (is-future-timestamp (timestamp uint))
   (> timestamp stacks-block-height)
 )
-
-;; Public Functions
 
 ;; Register a healthcare provider
 (define-public (register-provider (name (string-ascii 100)) (license-number (string-ascii 50)) (specialty (string-ascii 50)))
@@ -95,7 +130,9 @@
         license-number: license-number,
         specialty: specialty,
         verified: false,
-        registered-at: stacks-block-height
+        registered-at: stacks-block-height,
+        emergency-authorized: false,
+        last-emergency-access: u0
       }
     )
     (ok provider)
@@ -153,7 +190,75 @@
   )
 )
 
-;; Grant access to a healthcare provider
+;; Authorize provider for emergency access (only contract owner)
+(define-public (authorize-emergency-access (provider principal))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-unauthorized)
+    (asserts! (is-some (map-get? healthcare-providers provider)) err-not-found)
+    
+    (map-set healthcare-providers 
+      provider
+      (merge 
+        (unwrap-panic (map-get? healthcare-providers provider))
+        {emergency-authorized: true}
+      )
+    )
+    (ok true)
+  )
+)
+
+;; Emergency access to patient records (for critical situations)
+(define-public (emergency-access (record-id uint) (emergency-type (string-ascii 30)) (justification (string-ascii 200)))
+  (let ((record (unwrap! (map-get? medical-records record-id) err-not-found))
+        (provider tx-sender)
+        (provider-info (unwrap! (map-get? healthcare-providers provider) err-not-found))
+        (access-log-id (var-get total-emergency-accesses)))
+    
+    (asserts! (get verified provider-info) err-access-denied)
+    (asserts! (get emergency-authorized provider-info) err-access-denied)
+    (asserts! (get is-active record) err-not-found)
+    (asserts! (is-valid-emergency-type emergency-type) err-invalid-emergency-type)
+    (asserts! (> (len justification) u10) err-invalid-input)
+    (asserts! (not (check-emergency-cooldown provider)) err-emergency-cooldown)
+    
+    ;; Log emergency access
+    (map-set emergency-access-log 
+      access-log-id
+      {
+        record-id: record-id,
+        provider: provider,
+        emergency-type: emergency-type,
+        justification: justification,
+        accessed-at: stacks-block-height,
+        patient: (get patient record),
+        auto-expires-at: (+ stacks-block-height u72) ;; 12 hours auto-expiry
+      }
+    )
+    
+    ;; Update provider's last emergency access
+    (map-set healthcare-providers 
+      provider
+      (merge provider-info {last-emergency-access: stacks-block-height})
+    )
+    
+    ;; Grant temporary access
+    (map-set access-permissions 
+      {record-id: record-id, provider: provider}
+      {
+        granted-by: contract-owner, ;; System granted
+        granted-at: stacks-block-height,
+        expires-at: (+ stacks-block-height u72),
+        access-level: "read",
+        is-active: true
+      }
+    )
+    
+    (var-set total-emergency-accesses (+ access-log-id u1))
+    (var-set total-access-grants (+ (var-get total-access-grants) u1))
+    
+    (ok access-log-id)
+  )
+)
 (define-public (grant-access (record-id uint) (provider principal) (expires-at uint) (access-level (string-ascii 20)))
   (let ((record (unwrap! (map-get? medical-records record-id) err-not-found))
         (provider-info (unwrap! (map-get? healthcare-providers provider) err-not-found)))
@@ -268,11 +373,33 @@
   (map-get? access-permissions {record-id: record-id, provider: provider})
 )
 
+;; Get emergency access log
+(define-read-only (get-emergency-access-log (log-id uint))
+  (map-get? emergency-access-log log-id)
+)
+
+;; Get patient's emergency access history
+(define-read-only (get-patient-emergency-history (patient principal))
+  (filter check-patient-emergency-record (map list-emergency-logs (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9)))
+)
+
+(define-private (check-patient-emergency-record (log-entry (optional {record-id: uint, provider: principal, emergency-type: (string-ascii 30), justification: (string-ascii 200), accessed-at: uint, patient: principal, auto-expires-at: uint})))
+  (match log-entry
+    entry (is-eq (get patient entry) tx-sender)
+    false
+  )
+)
+
+(define-private (list-emergency-logs (log-id uint))
+  (map-get? emergency-access-log log-id)
+)
+
 ;; Get contract statistics
 (define-read-only (get-contract-stats)
   {
     total-records: (var-get total-records),
     total-access-grants: (var-get total-access-grants),
+    total-emergency-accesses: (var-get total-emergency-accesses),
     next-record-id: (var-get next-record-id)
   }
 )
