@@ -9,11 +9,13 @@ MediCore revolutionizes healthcare data management by providing patients with co
 ## Key Features
 
 - **Patient-Controlled Access**: Patients own and control all access to their medical records
+- **Multi-signature Access**: Multiple healthcare providers can collaboratively access records for complex cases
 - **Emergency Access Protocol**: Critical medical situations allow authorized providers emergency access with proper governance
 - **Verified Healthcare Providers**: Only verified medical professionals can access records
 - **Time-Limited Permissions**: Access grants expire automatically for enhanced security
 - **Granular Access Levels**: Different permission levels (read, write, full) for various use cases
 - **Emergency Access Logging**: Complete audit trail of all emergency access events
+- **Multi-signature Audit Trail**: Comprehensive tracking of collaborative access requests and signatures
 - **Cooldown Protection**: Prevents abuse of emergency access with mandatory waiting periods
 - **Immutable Audit Trail**: All access grants and revocations are permanently recorded
 - **Privacy-First Design**: Only encrypted hashes are stored on-chain, not actual medical data
@@ -26,10 +28,13 @@ MediCore revolutionizes healthcare data management by providing patients with co
 - `revoke-access`: Remove access permissions from a provider
 - `update-record`: Update an existing medical record
 - `deactivate-record`: Permanently deactivate a record
+- `create-multisig-request`: Create a collaborative access request for complex cases
+- `cancel-multisig-request`: Cancel an active multi-signature request
 
 ### For Healthcare Providers
 - `register-provider`: Register as a healthcare provider
 - `emergency-access`: Access patient records during critical medical emergencies
+- `sign-multisig-request`: Sign collaborative access requests for complex cases
 - `get-record`: Access medical records (if permissions granted)
 - `check-access`: Verify access permissions to a record
 
@@ -45,6 +50,31 @@ MediCore revolutionizes healthcare data management by providing patients with co
 - Medical Imaging
 - Treatment Plans
 - Consultation Notes
+
+## Multi-signature Access
+
+For complex medical cases requiring collaborative care, MediCore supports multi-signature access requests:
+
+### How It Works
+1. **Patient Initiates**: Patient creates a multisig request specifying providers and required signatures
+2. **Provider Selection**: Choose 2-5 verified healthcare providers for the collaboration
+3. **Signature Collection**: Providers review the case and sign the request with justification
+4. **Automatic Approval**: Once enough signatures are collected, all providers receive access
+5. **Time-Limited Access**: Access expires at the specified time for security
+
+### Multi-signature Requirements
+- **Minimum Signatures**: At least 2 providers must sign
+- **Maximum Providers**: Up to 5 providers can participate
+- **Verified Providers Only**: All providers must be verified by the contract owner
+- **Detailed Justification**: Each signature requires a detailed medical justification
+- **Case Description**: Minimum 20 characters describing the complex case
+
+### Use Cases
+- **Complex Surgical Cases**: Multiple specialists collaborating on surgery
+- **Rare Disease Diagnosis**: Multiple experts reviewing symptoms
+- **Multi-disciplinary Treatment**: Coordinated care across specialties
+- **Second Opinion Requests**: Multiple providers reviewing difficult cases
+- **Research Collaboration**: Academic medical centers working together
 
 ## Emergency Access Types
 
@@ -95,6 +125,17 @@ MediCore revolutionizes healthcare data management by providing patients with co
 ;; Grant access to a provider (as patient)
 (contract-call? .medicore grant-access u1 'ST1PROVIDER... u1000 "read")
 
+;; Create multisig request for complex case (as patient)
+(contract-call? .medicore create-multisig-request u1 
+  (list 'ST1CARDIO... 'ST1SURGEON... 'ST1ANESTHESIA...) 
+  u2 
+  "Complex cardiac surgery requiring multi-specialty collaboration" 
+  "read" 
+  u2000)
+
+;; Sign multisig request (as healthcare provider)
+(contract-call? .medicore sign-multisig-request u1 "Reviewed case, surgical intervention recommended")
+
 ;; Emergency access during critical situation (as authorized provider)
 (contract-call? .medicore emergency-access u1 "cardiac-arrest" "Patient unconscious, requires immediate medical history")
 ```
@@ -104,10 +145,11 @@ MediCore revolutionizes healthcare data management by providing patients with co
 - All inputs are validated to prevent malicious data
 - Access permissions automatically expire
 - Only verified healthcare providers can access records
+- Multi-signature requests require verified providers and detailed justifications
 - Emergency access requires authorization and has built-in safeguards
 - 24-hour cooldown period prevents emergency access abuse
-- Complete audit trail for all emergency access events
-- Patients maintain full control over their data
+- Complete audit trail for all access events (individual, multisig, and emergency)
+- Patients maintain full control over their data and collaboration requests
 - Comprehensive error handling prevents unauthorized access
 
 ## Testing
