@@ -4,7 +4,7 @@ A decentralized medical records management system built on Stacks blockchain tha
 
 ## Overview
 
-MediCore revolutionizes healthcare data management by providing patients with complete ownership and control over their medical records. Healthcare providers can request access to specific records, and patients can grant time-limited permissions with different access levels.
+MediCore revolutionizes healthcare data management by providing patients with complete ownership and control over their medical records. Healthcare providers can request access to specific records, and patients can grant time-limited permissions with different access levels. The system now includes **multi-signature access** for complex medical cases requiring collaborative care.
 
 ## Key Features
 
@@ -51,7 +51,7 @@ MediCore revolutionizes healthcare data management by providing patients with co
 - Treatment Plans
 - Consultation Notes
 
-## Multi-signature Access
+## Multi-signature Access 🔐
 
 For complex medical cases requiring collaborative care, MediCore supports multi-signature access requests:
 
@@ -66,8 +66,9 @@ For complex medical cases requiring collaborative care, MediCore supports multi-
 - **Minimum Signatures**: At least 2 providers must sign
 - **Maximum Providers**: Up to 5 providers can participate
 - **Verified Providers Only**: All providers must be verified by the contract owner
-- **Detailed Justification**: Each signature requires a detailed medical justification
+- **Detailed Justification**: Each signature requires a detailed medical justification (minimum 20 characters)
 - **Case Description**: Minimum 20 characters describing the complex case
+- **Expiration Time**: All multisig requests must have a future expiration time
 
 ### Use Cases
 - **Complex Surgical Cases**: Multiple specialists collaborating on surgery
@@ -75,6 +76,36 @@ For complex medical cases requiring collaborative care, MediCore supports multi-
 - **Multi-disciplinary Treatment**: Coordinated care across specialties
 - **Second Opinion Requests**: Multiple providers reviewing difficult cases
 - **Research Collaboration**: Academic medical centers working together
+
+### Multi-signature Workflow
+```clarity
+;; 1. Patient creates multisig request
+(contract-call? .medicore create-multisig-request 
+  u1  ;; record-id
+  (list 'ST1CARDIO... 'ST1SURGEON... 'ST1ANESTHESIA...)  ;; providers
+  u2  ;; required signatures
+  "Complex cardiac surgery requiring multi-specialty collaboration"  ;; case description
+  "read"  ;; access level
+  u2000)  ;; expires at block height
+
+;; 2. Each provider signs the request
+(contract-call? .medicore sign-multisig-request 
+  u1  ;; request-id
+  "Reviewed case, surgical intervention recommended based on imaging results")
+
+;; 3. Once enough signatures are collected, access is automatically granted to all providers
+
+;; 4. Patient can cancel request if needed (before approval)
+(contract-call? .medicore cancel-multisig-request u1)
+```
+
+### Multi-signature Security Features
+- **Duplicate Prevention**: Providers cannot sign the same request multiple times
+- **Time-bound Requests**: All requests expire at specified block height
+- **Verification Required**: Only verified healthcare providers can participate
+- **Detailed Audit Trail**: All signatures include timestamp, specialty, and justification
+- **Patient Control**: Only the patient who owns the record can initiate requests
+- **Cancellation Rights**: Patients can cancel requests before approval
 
 ## Emergency Access Types
 
@@ -126,7 +157,8 @@ For complex medical cases requiring collaborative care, MediCore supports multi-
 (contract-call? .medicore grant-access u1 'ST1PROVIDER... u1000 "read")
 
 ;; Create multisig request for complex case (as patient)
-(contract-call? .medicore create-multisig-request u1 
+(contract-call? .medicore create-multisig-request 
+  u1 
   (list 'ST1CARDIO... 'ST1SURGEON... 'ST1ANESTHESIA...) 
   u2 
   "Complex cardiac surgery requiring multi-specialty collaboration" 
@@ -134,10 +166,33 @@ For complex medical cases requiring collaborative care, MediCore supports multi-
   u2000)
 
 ;; Sign multisig request (as healthcare provider)
-(contract-call? .medicore sign-multisig-request u1 "Reviewed case, surgical intervention recommended")
+(contract-call? .medicore sign-multisig-request 
+  u1 
+  "Reviewed case, surgical intervention recommended based on imaging results")
 
 ;; Emergency access during critical situation (as authorized provider)
-(contract-call? .medicore emergency-access u1 "cardiac-arrest" "Patient unconscious, requires immediate medical history")
+(contract-call? .medicore emergency-access 
+  u1 
+  "cardiac-arrest" 
+  "Patient unconscious, requires immediate medical history for treatment")
+```
+
+### Read-Only Functions
+```clarity
+;; Get multisig request details
+(contract-call? .medicore get-multisig-request u1)
+
+;; Get multisig providers list
+(contract-call? .medicore get-multisig-providers u1)
+
+;; Check if provider signed request
+(contract-call? .medicore has-provider-signed u1 'ST1PROVIDER...)
+
+;; Get signature details
+(contract-call? .medicore get-multisig-signature u1 'ST1PROVIDER...)
+
+;; Get contract statistics
+(contract-call? .medicore get-contract-stats)
 ```
 
 ## Security Features
@@ -151,16 +206,30 @@ For complex medical cases requiring collaborative care, MediCore supports multi-
 - Complete audit trail for all access events (individual, multisig, and emergency)
 - Patients maintain full control over their data and collaboration requests
 - Comprehensive error handling prevents unauthorized access
+- Proper use of `unwrap!` and `unwrap-panic` for safe data handling
+- All functions pass Clarinet check without errors or warnings
+
+## Error Codes
+
+- `u100`: Unauthorized access attempt
+- `u101`: Record or resource not found
+- `u102`: Invalid input parameters
+- `u103`: Access denied (unverified provider)
+- `u104`: Record already exists
+- `u105`: Invalid expiration time
+- `u106`: Emergency access cooldown active
+- `u107`: Invalid emergency type
+- `u108`: Multisig request already exists
+- `u109`: Insufficient signatures for approval
+- `u110`: Provider already signed request
+- `u111`: Multisig request expired or inactive
 
 ## Testing
 
 Run the test suite with:
 ```bash
+clarinet check
 clarinet test
 ```
 
-## Contributing
-
-We welcome contributions! Please read our contributing guidelines and submit pull requests for any improvements.
-
-*MediCore - Empowering patients, enabling healthcare providers, securing medical data.*
+*MediCore - Empowering patients, enabling healthcare providers, securing medical data through collaborative care.*

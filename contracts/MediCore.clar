@@ -145,8 +145,9 @@
 )
 
 (define-private (check-emergency-cooldown (provider principal))
-  (let ((provider-info (unwrap-panic (map-get? healthcare-providers provider))))
-    (> (+ (get last-emergency-access provider-info) emergency-cooldown-period) stacks-block-height)
+  (match (map-get? healthcare-providers provider)
+    provider-info (> (+ (get last-emergency-access provider-info) emergency-cooldown-period) stacks-block-height)
+    false
   )
 )
 
@@ -207,7 +208,7 @@
     (map-set healthcare-providers 
       provider
       (merge 
-        (unwrap-panic (map-get? healthcare-providers provider))
+        (unwrap! (map-get? healthcare-providers provider) err-not-found)
         {verified: true}
       )
     )
@@ -239,7 +240,7 @@
     
     (map-set patient-records 
       patient
-      (unwrap-panic (as-max-len? (append current-records record-id) u100))
+      (unwrap! (as-max-len? (append current-records record-id) u100) err-invalid-input)
     )
     
     (var-set next-record-id (+ record-id u1))
@@ -258,7 +259,7 @@
     (map-set healthcare-providers 
       provider
       (merge 
-        (unwrap-panic (map-get? healthcare-providers provider))
+        (unwrap! (map-get? healthcare-providers provider) err-not-found)
         {emergency-authorized: true}
       )
     )
@@ -318,6 +319,8 @@
     (ok access-log-id)
   )
 )
+
+;; Grant access to a healthcare provider
 (define-public (grant-access (record-id uint) (provider principal) (expires-at uint) (access-level (string-ascii 20)))
   (let ((record (unwrap! (map-get? medical-records record-id) err-not-found))
         (provider-info (unwrap! (map-get? healthcare-providers provider) err-not-found)))
@@ -339,6 +342,140 @@
     )
     
     (var-set total-access-grants (+ (var-get total-access-grants) u1))
+    (ok true)
+  )
+)
+
+;; Create multi-signature access request
+(define-public (create-multisig-request (record-id uint) (providers (list 5 principal)) (required-signatures uint) (case-description (string-ascii 200)) (access-level (string-ascii 20)) (expires-at uint))
+  (let ((record (unwrap! (map-get? medical-records record-id) err-not-found))
+        (request-id (var-get next-multisig-id)))
+    
+    (asserts! (is-eq tx-sender (get patient record)) err-unauthorized)
+    (asserts! (get is-active record) err-not-found)
+    (asserts! (validate-multisig-providers providers) err-access-denied)
+    (asserts! (and (>= required-signatures min-multisig-signatures) (<= required-signatures (len providers))) err-invalid-input)
+    (asserts! (> (len case-description) u20) err-invalid-input)
+    (asserts! (is-valid-access-level access-level) err-invalid-input)
+    (asserts! (is-future-timestamp expires-at) err-invalid-expiry)
+    (asserts! (is-none (map-get? multisig-access-requests request-id)) err-multisig-exists)
+    
+    ;; Create multisig request
+    (map-set multisig-access-requests 
+      request-id
+      {
+        record-id: record-id,
+        initiator: tx-sender,
+        required-signatures: required-signatures,
+        current-signatures: u0,
+        expires-at: expires-at,
+        case-description: case-description,
+        access-level: access-level,
+        is-active: true,
+        is-approved: false,
+        created-at: stacks-block-height
+      }
+    )
+    
+    ;; Store providers list
+    (map-set multisig-providers request-id providers)
+    
+    (var-set next-multisig-id (+ request-id u1))
+    (var-set total-multisig-requests (+ (var-get total-multisig-requests) u1))
+    
+    (ok request-id)
+  )
+)
+
+;; Sign multi-signature access request
+(define-public (sign-multisig-request (request-id uint) (signature-justification (string-ascii 150)))
+  (let ((request (unwrap! (map-get? multisig-access-requests request-id) err-not-found))
+        (providers (unwrap! (map-get? multisig-providers request-id) err-not-found))
+        (provider tx-sender)
+        (provider-info (unwrap! (map-get? healthcare-providers provider) err-not-found)))
+    
+    (asserts! (get verified provider-info) err-access-denied)
+    (asserts! (get is-active request) err-multisig-expired)
+    (asserts! (> (get expires-at request) stacks-block-height) err-multisig-expired)
+    (asserts! (is-provider-in-list provider providers) err-access-denied)
+    (asserts! (not (has-provider-signed request-id provider)) err-already-signed)
+    (asserts! (> (len signature-justification) u20) err-invalid-input)
+    (asserts! (not (get is-approved request)) err-multisig-expired)
+    
+    ;; Record signature
+    (map-set multisig-signatures 
+      {request-id: request-id, provider: provider}
+      {
+        signed-at: stacks-block-height,
+        provider-specialty: (get specialty provider-info),
+        signature-justification: signature-justification
+      }
+    )
+    
+    ;; Update current signatures count
+    (let ((new-signature-count (+ (get current-signatures request) u1)))
+      (map-set multisig-access-requests 
+        request-id
+        (merge request {current-signatures: new-signature-count})
+      )
+      
+      ;; Check if we have enough signatures to approve
+      (if (>= new-signature-count (get required-signatures request))
+        (begin
+          ;; Mark as approved
+          (map-set multisig-access-requests 
+            request-id
+            (merge request {
+              current-signatures: new-signature-count,
+              is-approved: true
+            })
+          )
+          
+          ;; Grant access to all providers
+          (let ((grant-result (fold grant-multisig-provider-access providers {request-id: request-id, success: true})))
+            (var-set total-access-grants (+ (var-get total-access-grants) (len providers)))
+            (ok true)
+          )
+        )
+        (ok false)
+      )
+    )
+  )
+)
+
+;; Helper function for granting access in multisig
+(define-private (grant-multisig-provider-access (provider principal) (context {request-id: uint, success: bool}))
+  (if (get success context)
+    (let ((request (unwrap-panic (map-get? multisig-access-requests (get request-id context)))))
+      (map-set access-permissions 
+        {record-id: (get record-id request), provider: provider}
+        {
+          granted-by: (get initiator request),
+          granted-at: stacks-block-height,
+          expires-at: (get expires-at request),
+          access-level: (get access-level request),
+          is-active: true
+        }
+      )
+      context
+    )
+    context
+  )
+)
+
+;; Cancel multi-signature access request (only by initiator)
+(define-public (cancel-multisig-request (request-id uint))
+  (let ((request (unwrap! (map-get? multisig-access-requests request-id) err-not-found)))
+    
+    (asserts! (is-eq tx-sender (get initiator request)) err-unauthorized)
+    (asserts! (get is-active request) err-multisig-expired)
+    (asserts! (not (get is-approved request)) err-multisig-expired)
+    
+    (map-set multisig-access-requests 
+      request-id
+      (merge request {is-active: false})
+    )
+    
     (ok true)
   )
 )
